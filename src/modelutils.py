@@ -99,8 +99,8 @@ def get_model_head(model):
             head.append(model.model.decoder.project_out)
         head.append(model.lm_head)
     elif model.config.model_type == "phi":
-        if model.model.final_layer_norm is not None:
-            head.append(model.model.final_layer_norm)
+        if model.model.final_layernorm is not None:
+            head.append(model.model.final_layernorm)
         head.append(model.lm_head)
     else:
         raise ValueError(MODEL_ERROR_MSG.format(model.config.model_type))
