@@ -8,7 +8,7 @@ import transformers
 from accelerate import dispatch_model
 from transformers import AutoConfig, AutoModelForCausalLM
 
-MODEL_ERROR_MSG = "Unsupported model type {} - only 'llama', 'Yi', 'opt', 'falcon', 'phi3' are supported"
+MODEL_ERROR_MSG = "Unsupported model type {} - only 'llama', 'Yi', 'opt', 'falcon', 'phi' (1 and 2) and 'phi3' are supported"
 FALCON_TYPES = ("falcon", "refinedweb", "refinedwebmodel")
 LLAMA_LIKE = ("llama", "Yi", "mistral", "mixtral", "gemma", "cohere")
 
@@ -84,7 +84,7 @@ def get_model(
 
 def get_model_head(model):
     head = torch.nn.ModuleList()
-    if model.config.model_type in (*LLAMA_LIKE, "phi3"):
+    if model.config.model_type in (*LLAMA_LIKE,"phi3"):
         if model.model.norm is not None:
             head.append(model.model.norm)
         head.append(model.lm_head)
@@ -98,12 +98,19 @@ def get_model_head(model):
         if model.model.decoder.project_out is not None:
             head.append(model.model.decoder.project_out)
         head.append(model.lm_head)
+    elif model.config.model_type == "phi":
+        if model.model.final_layer_norm is not None:
+            head.append(model.model.final_layer_norm)
+        head.append(model.lm_head)
     else:
         raise ValueError(MODEL_ERROR_MSG.format(model.config.model_type))
     return head
 
 
 def get_lm_logits(inps_, model):
+    # inps_ have already "passed through" attention here. 
+    # We must normalize whenever our model supports norm
+
     if model.config.model_type in (*LLAMA_LIKE, "phi3"):
         hidden_states = inps_.unsqueeze(0)
         if model.model.norm is not None:
@@ -121,13 +128,18 @@ def get_lm_logits(inps_, model):
         if model.model.decoder.project_out is not None:
             hidden_states = model.model.decoder.project_out(hidden_states)
         lm_logits = model.lm_head(hidden_states)
+    elif model.config.model_type == "phi":
+        hidden_states = inps_.unsqueeze(0)
+        if model.model.final_layernorm is not None:
+            hidden_states= model.model.final_layernorm(hidden_states)
+        lm_logits = model.lm_head(hidden_states)
     else:
         raise ValueError(MODEL_ERROR_MSG.format(model.config.model_type))
     return lm_logits
 
 
 def get_layers(model):
-    if model.config.model_type in (*LLAMA_LIKE, "phi3"):
+    if model.config.model_type in (*LLAMA_LIKE, "phi3", "phi"):
         return model.model.layers
     elif model.config.model_type.lower() in FALCON_TYPES:
         return model.transformer.h
@@ -172,6 +184,17 @@ def get_sequential_groups(model):
         ]
     elif model.config.model_type == "phi3":
         return [["self_attn.qkv_proj"], ["self_attn.o_proj"], ["mlp.gate_up_proj"], ["mlp.down_proj"]]
+    elif model.config.model_type == "phi":
+        return [
+            [
+                ["self_attn.q_proj","self_attn.k_proj","self_attn.v_proj"],
+                ["self_attn.dense"]
+            ],
+            [
+                ["mlp.fc1"],
+                ["mlp.fc2"]
+            ]
+        ]
     else:
         raise ValueError(MODEL_ERROR_MSG.format(model.config.model_type))
 
